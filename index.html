@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dungeon Crawler</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0b0a0f; overflow: hidden; }
+  canvas { display: block; cursor: crosshair; }
+  #hud {
+    position: fixed; left: 16px; bottom: 16px; color: #e8e0d0;
+    font: 14px/1.4 system-ui, sans-serif; pointer-events: none;
+    background: rgba(0,0,0,.55); padding: 10px 14px; border-radius: 8px;
+  }
+  #hpbar { width: 200px; height: 14px; background: #3a1010; border-radius: 4px; overflow: hidden; margin: 4px 0; }
+  #hpfill { height: 100%; background: linear-gradient(#e33, #a11); width: 100%; }
+  #help {
+    position: fixed; right: 16px; top: 16px; color: #b8b0a0;
+    font: 13px/1.5 system-ui, sans-serif; pointer-events: none;
+    background: rgba(0,0,0,.55); padding: 8px 12px; border-radius: 8px;
+  }
+  #overlay {
+    position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+    flex-direction: column; background: rgba(0,0,0,.7); color: #f0e6d0;
+    font: 20px system-ui, sans-serif; cursor: pointer; text-align: center;
+  }
+  #overlay h1 { font-size: 48px; margin: 0 0 12px; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="hud">
+  <div>🧙 Hero &nbsp; Kills: <span id="kills">0</span> / <span id="total">0</span></div>
+  <div id="hpbar"><div id="hpfill"></div></div>
+  <div><span id="hptext"></span> &nbsp; 🧪 × <span id="potions">3</span></div>
+</div>
+<div id="help">Click to move · Click a monster to attack · <b>Q</b> drink potion</div>
+<div id="overlay"><h1 id="ovtitle"></h1><div>Click to play again</div></div>
+
+<script>
+const TILE = 40, W = 60, H = 40, VIEW_RADIUS = 8;
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const $ = id => document.getElementById(id);
+
+const MONSTER_TYPES = [
+  { emoji: '🐀', name: 'Rat',      hp: 12, dmg: [1, 3], speed: 3.2, cooldown: 0.8 },
+  { emoji: '🕷️', name: 'Spider',   hp: 18, dmg: [2, 4], speed: 3.6, cooldown: 0.9 },
+  { emoji: '💀', name: 'Skeleton', hp: 30, dmg: [3, 6], speed: 2.4, cooldown: 1.1 },
+  { emoji: '👹', name: 'Ogre',     hp: 55, dmg: [6, 10], speed: 2.0, cooldown: 1.5 },
+];
+
+let map, explored, rooms, hero, monsters, floaters, camera, mouse, gameOver;
+
+const rand = (a, b) => a + Math.floor(Math.random() * (b - a + 1));
+const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+const walkable = (x, y) => x >= 0 && y >= 0 && x < W && y < H && map[y][x] === 1;
+
+// ---------- Dungeon generation: random rooms joined by corridors ----------
+function generate() {
+  map = Array.from({ length: H }, () => new Array(W).fill(0));
+  explored = Array.from({ length: H }, () => new Array(W).fill(false));
+  rooms = [];
+  for (let tries = 0; tries < 200 && rooms.length < 12; tries++) {
+    const w = rand(5, 10), h = rand(4, 8);
+    const r = { x: rand(1, W - w - 2), y: rand(1, H - h - 2), w, h };
+    if (rooms.some(o => r.x < o.x + o.w + 1 && r.x + r.w + 1 > o.x && r.y < o.y + o.h + 1 && r.y + r.h + 1 > o.y)) continue;
+    rooms.push(r);
+  }
+  for (const r of rooms)
+    for (let y = r.y; y < r.y + r.h; y++)
+      for (let x = r.x; x < r.x + r.w; x++) map[y][x] = 1;
+  const center = r => ({ x: r.x + (r.w >> 1), y: r.y + (r.h >> 1) });
+  for (let i = 1; i < rooms.length; i++) {
+    const a = center(rooms[i - 1]), b = center(rooms[i]);
+    const horizontalFirst = Math.random() < 0.5;
+    const corner = horizontalFirst ? { x: b.x, y: a.y } : { x: a.x, y: b.y };
+    carve(a, corner); carve(corner, b);
+  }
+  return center(rooms[0]);
+}
+function carve(a, b) {
+  for (let x = Math.min(a.x, b.x); x <= Math.max(a.x, b.x); x++) map[a.y][x] = 1;
+  for (let y = Math.min(a.y, b.y); y <= Math.max(a.y, b.y); y++) map[y][a.x] = 1;
+}
+
+// ---------- Pathfinding: BFS over 8 directions (no corner cutting) ----------
+function findPath(sx, sy, tx, ty) {
+  if (!walkable(tx, ty)) return [];
+  const prev = new Int32Array(W * H).fill(-1);
+  const start = sy * W + sx, goal = ty * W + tx;
+  prev[start] = start;
+  const queue = [start];
+  for (let qi = 0; qi < queue.length; qi++) {
+    const cur = queue[qi];
+    if (cur === goal) break;
+    const cx = cur % W, cy = (cur / W) | 0;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      if (!dx && !dy) continue;
+      const nx = cx + dx, ny = cy + dy;
+      if (!walkable(nx, ny)) continue;
+      if (dx && dy && (!walkable(cx + dx, cy) || !walkable(cx, cy + dy))) continue;
+      const n = ny * W + nx;
+      if (prev[n] !== -1) continue;
+      prev[n] = cur;
+      queue.push(n);
+    }
+  }
+  if (prev[goal] === -1) return [];
+  const path = [];
+  for (let c = goal; c !== start; c = prev[c]) path.push({ x: c % W, y: (c / W) | 0 });
+  return path.reverse();
+}
+
+// ---------- Setup ----------
+function newGame() {
+  const start = generate();
+  hero = { x: start.x, y: start.y, hp: 100, maxHp: 100, speed: 4.5, path: [],
+           target: null, cooldown: 0, repath: 0, potions: 3, kills: 0 };
+  monsters = [];
+  for (let i = 1; i < rooms.length; i++) {
+    const r = rooms[i], count = rand(1, 3);
+    for (let k = 0; k < count; k++) {
+      const tier = Math.min(MONSTER_TYPES.length - 1, rand(0, Math.floor(i / 3)));
+      const t = MONSTER_TYPES[tier];
+      monsters.push({ ...t, x: rand(r.x, r.x + r.w - 1), y: rand(r.y, r.y + r.h - 1),
+                      maxHp: t.hp, path: [], cd: 0, repath: 0, aggro: false });
+    }
+  }
+  $('total').textContent = monsters.length;
+  floaters = [];
+  mouse = { x: 0, y: 0 };
+  camera = { x: 0, y: 0 };
+  gameOver = false;
+  $('overlay').style.display = 'none';
+}
+
+// ---------- Movement along a path ----------
+function stepAlong(ent, dt, blocked) {
+  if (!ent.path.length) return;
+  const next = ent.path[0];
+  if (blocked && blocked(next.x, next.y)) return;
+  const dx = next.x - ent.x, dy = next.y - ent.y, d = Math.hypot(dx, dy), move = ent.speed * dt;
+  if (d <= move) { ent.x = next.x; ent.y = next.y; ent.path.shift(); }
+  else { ent.x += dx / d * move; ent.y += dy / d * move; }
+}
+const tileOf = e => ({ x: Math.round(e.x), y: Math.round(e.y) });
+
+function floatText(x, y, text, color) {
+  floaters.push({ x, y, text, color, life: 1 });
+}
+
+// ---------- Update ----------
+function update(dt) {
+  if (gameOver) return;
+  const ht = tileOf(hero);
+
+  // Hero attacking a target
+  hero.cooldown -= dt;
+  if (hero.target && hero.target.hp <= 0) hero.target = null;
+  if (hero.target) {
+    const m = hero.target;
+    if (dist(hero, m) <= 1.5) {
+      hero.path = [];
+      if (hero.cooldown <= 0) {
+        const dmg = rand(5, 10), crit = Math.random() < 0.15;
+        const total = crit ? dmg * 2 : dmg;
+        m.hp -= total; m.aggro = true;
+        floatText(m.x, m.y, crit ? total + '!' : total, crit ? '#ffd23f' : '#fff');
+        hero.cooldown = 0.55;
+        if (m.hp <= 0) { hero.kills++; hero.target = null; }
+      }
+    } else if ((hero.repath -= dt) <= 0) {
+      const mt = tileOf(m);
+      hero.path = findPath(ht.x, ht.y, mt.x, mt.y);
+      hero.repath = 0.25;
+    }
+  }
+  stepAlong(hero, dt);
+
+  // Monsters
+  for (const m of monsters) {
+    if (m.hp <= 0) continue;
+    const d = dist(m, hero);
+    if (d < 6) m.aggro = true;
+    if (!m.aggro) continue;
+    m.cd -= dt;
+    if (d <= 1.3) {
+      m.path = [];
+      if (m.cd <= 0) {
+        const dmg = rand(m.dmg[0], m.dmg[1]);
+        hero.hp -= dmg;
+        floatText(hero.x, hero.y, '-' + dmg, '#ff5555');
+        m.cd = m.cooldown;
+      }
+    } else {
+      if ((m.repath -= dt) <= 0) {
+        const mt = tileOf(m);
+        m.path = findPath(mt.x, mt.y, ht.x, ht.y);
+        m.path.pop(); // stop beside the hero, not on top
+        m.repath = 0.4 + Math.random() * 0.2;
+      }
+      stepAlong(m, dt, (x, y) => monsters.some(o => o !== m && o.hp > 0 && tileOf(o).x === x && tileOf(o).y === y));
+    }
+  }
+  monsters = monsters.filter(m => m.hp > 0 || (m.fade = (m.fade ?? 1) - dt) > 0);
+
+  // Fog of war
+  for (let y = Math.max(0, ht.y - VIEW_RADIUS); y <= Math.min(H - 1, ht.y + VIEW_RADIUS); y++)
+    for (let x = Math.max(0, ht.x - VIEW_RADIUS); x <= Math.min(W - 1, ht.x + VIEW_RADIUS); x++)
+      if (Math.hypot(x - ht.x, y - ht.y) <= VIEW_RADIUS) explored[y][x] = true;
+
+  for (const f of floaters) { f.life -= dt; f.y -= dt * 0.8; }
+  floaters = floaters.filter(f => f.life > 0);
+
+  if (hero.hp <= 0) { hero.hp = 0; endGame('💀 You Died'); }
+  else if (!monsters.some(m => m.hp > 0)) endGame('🏆 Dungeon Cleared!');
+}
+
+function endGame(title) {
+  gameOver = true;
+  $('ovtitle').textContent = title;
+  $('overlay').style.display = 'flex';
+}
+
+// ---------- Drawing ----------
+function drawEmoji(emoji, x, y, size) {
+  ctx.font = `${size}px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(emoji, x, y);
+}
+function healthBar(x, y, frac) {
+  ctx.fillStyle = '#300'; ctx.fillRect(x - 16, y, 32, 5);
+  ctx.fillStyle = frac > 0.5 ? '#4c4' : frac > 0.25 ? '#dc3' : '#e33';
+  ctx.fillRect(x - 16, y, 32 * frac, 5);
+}
+const visible = (x, y) => Math.hypot(x - hero.x, y - hero.y) <= VIEW_RADIUS;
+
+function draw() {
+  canvas.width = innerWidth; canvas.height = innerHeight;
+  camera.x = hero.x * TILE - canvas.width / 2 + TILE / 2;
+  camera.y = hero.y * TILE - canvas.height / 2 + TILE / 2;
+  ctx.fillStyle = '#0b0a0f'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  const x0 = Math.max(0, Math.floor(camera.x / TILE)), x1 = Math.min(W - 1, Math.ceil((camera.x + canvas.width) / TILE));
+  const y0 = Math.max(0, Math.floor(camera.y / TILE)), y1 = Math.min(H - 1, Math.ceil((camera.y + canvas.height) / TILE));
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    if (!explored[y][x]) continue;
+    const sx = x * TILE - camera.x, sy = y * TILE - camera.y;
+    if (map[y][x]) {
+      ctx.fillStyle = (x + y) % 2 ? '#3b3530' : '#37312c';
+      ctx.fillRect(sx, sy, TILE, TILE);
+    } else if ([[0,1],[1,0],[0,-1],[-1,0]].some(([dx, dy]) => walkable(x + dx, y + dy))) {
+      ctx.fillStyle = '#5a4f45'; ctx.fillRect(sx, sy, TILE, TILE);
+      ctx.fillStyle = '#6b5f53'; ctx.fillRect(sx, sy, TILE, 6);
+    }
+    if (!visible(x, y)) { ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.fillRect(sx, sy, TILE, TILE); }
+  }
+
+  // Path marker
+  if (hero.path.length && !hero.target) {
+    const end = hero.path[hero.path.length - 1];
+    ctx.strokeStyle = 'rgba(255,220,120,.6)'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(end.x * TILE - camera.x + TILE / 2, end.y * TILE - camera.y + TILE / 2, 8, 0, Math.PI * 2); ctx.stroke();
+  }
+
+  const hovered = monsterAt(mouse.x, mouse.y);
+  for (const m of monsters) {
+    if (!visible(m.x, m.y)) continue;
+    const sx = m.x * TILE - camera.x + TILE / 2, sy = m.y * TILE - camera.y + TILE / 2;
+    ctx.globalAlpha = m.hp > 0 ? 1 : Math.max(0, m.fade);
+    if (m === hovered || m === hero.target) {
+      ctx.fillStyle = 'rgba(255,60,60,.25)';
+      ctx.beginPath(); ctx.arc(sx, sy, 20, 0, Math.PI * 2); ctx.fill();
+    }
+    drawEmoji(m.emoji, sx, sy, 28);
+    if (m.hp > 0) healthBar(sx, sy - 24, m.hp / m.maxHp);
+    ctx.globalAlpha = 1;
+  }
+  if (hovered) {
+    ctx.fillStyle = '#fff'; ctx.font = '14px system-ui'; ctx.textAlign = 'center';
+    ctx.fillText(hovered.name, hovered.x * TILE - camera.x + TILE / 2, hovered.y * TILE - camera.y - 4);
+  }
+
+  drawEmoji('🧙', hero.x * TILE - camera.x + TILE / 2, hero.y * TILE - camera.y + TILE / 2, 30);
+
+  for (const f of floaters) {
+    ctx.globalAlpha = Math.min(1, f.life * 2);
+    ctx.fillStyle = f.color; ctx.font = 'bold 18px system-ui'; ctx.textAlign = 'center';
+    ctx.fillText(f.text, f.x * TILE - camera.x + TILE / 2, f.y * TILE - camera.y);
+    ctx.globalAlpha = 1;
+  }
+
+  $('hpfill').style.width = (hero.hp / hero.maxHp * 100) + '%';
+  $('hptext').textContent = `HP ${Math.ceil(hero.hp)} / ${hero.maxHp}`;
+  $('kills').textContent = hero.kills;
+  $('potions').textContent = hero.potions;
+}
+
+// ---------- Input ----------
+function monsterAt(px, py) {
+  const wx = (px + camera.x) / TILE - 0.5, wy = (py + camera.y) / TILE - 0.5;
+  return monsters.find(m => m.hp > 0 && visible(m.x, m.y) && Math.hypot(m.x - wx, m.y - wy) < 0.6);
+}
+canvas.addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
+canvas.addEventListener('mousedown', e => {
+  if (gameOver) return;
+  const m = monsterAt(e.clientX, e.clientY);
+  if (m) { hero.target = m; hero.repath = 0; return; }
+  hero.target = null;
+  const tx = Math.floor((e.clientX + camera.x) / TILE), ty = Math.floor((e.clientY + camera.y) / TILE);
+  const ht = tileOf(hero);
+  if (explored[ty]?.[tx]) hero.path = findPath(ht.x, ht.y, tx, ty);
+});
+addEventListener('keydown', e => {
+  if (e.key.toLowerCase() === 'q' && !gameOver && hero.potions > 0 && hero.hp < hero.maxHp) {
+    hero.potions--;
+    const heal = Math.round(hero.maxHp * 0.4);
+    hero.hp = Math.min(hero.maxHp, hero.hp + heal);
+    floatText(hero.x, hero.y, '+' + heal, '#5f5');
+  }
+});
+$('overlay').addEventListener('click', newGame);
+
+// ---------- Main loop ----------
+let last = performance.now();
+function loop(now) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+newGame();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
