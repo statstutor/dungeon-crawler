@@ -2,20 +2,22 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Dungeon Crawler</title>
 <style>
-  html, body { margin: 0; height: 100%; background: #0b0a0f; overflow: hidden; }
-  canvas { display: block; cursor: crosshair; }
+  /* One-screen game: dark dungeon canvas with floating HUD panels */
+  :root { color-scheme: dark; --bg: #0b0a0f; --fg: #e8e0d0; --muted: #b8b0a0; --panel: rgba(0,0,0,.55); }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); overflow: hidden; }
+  canvas { display: block; cursor: crosshair; touch-action: none; }
   #hud {
-    position: fixed; left: 16px; bottom: 16px; color: #e8e0d0;
+    position: fixed; left: 16px; bottom: calc(16px + env(safe-area-inset-bottom, 0px)); color: var(--fg);
     font: 14px/1.4 system-ui, sans-serif; pointer-events: none;
     background: rgba(0,0,0,.55); padding: 10px 14px; border-radius: 8px;
   }
   #hpbar { width: 200px; height: 14px; background: #3a1010; border-radius: 4px; overflow: hidden; margin: 4px 0; }
   #hpfill { height: 100%; background: linear-gradient(#e33, #a11); width: 100%; }
   #help {
-    position: fixed; right: 16px; top: 16px; color: #b8b0a0;
+    position: fixed; right: 16px; top: calc(16px + env(safe-area-inset-top, 0px)); color: var(--muted); max-width: calc(100% - 56px);
     font: 13px/1.5 system-ui, sans-serif; pointer-events: none;
     background: rgba(0,0,0,.55); padding: 8px 12px; border-radius: 8px;
   }
@@ -24,6 +26,8 @@
     flex-direction: column; background: rgba(0,0,0,.7); color: #f0e6d0;
     font: 20px system-ui, sans-serif; cursor: pointer; text-align: center;
   }
+  #potbtn { pointer-events: auto; cursor: pointer; background: #2a2018; color: var(--fg); border: 1px solid #6b5f53; border-radius: 6px; padding: 2px 8px; font: inherit; }
+  #potbtn:focus-visible { outline: 2px solid #ffd23f; }
   #overlay h1 { font-size: 48px; margin: 0 0 12px; }
 </style>
 </head>
@@ -32,9 +36,9 @@
 <div id="hud">
   <div>🧙 Hero &nbsp; Kills: <span id="kills">0</span> / <span id="total">0</span></div>
   <div id="hpbar"><div id="hpfill"></div></div>
-  <div><span id="hptext"></span> &nbsp; 🧪 × <span id="potions">3</span></div>
+  <div><span id="hptext"></span> &nbsp; <button id="potbtn" type="button">🧪 × <span id="potions">3</span></button></div>
 </div>
-<div id="help">Click to move · Click a monster to attack · <b>Q</b> drink potion</div>
+<div id="help">Click to move · Click a monster to attack · <b>Q</b> or 🧪 drink potion</div>
 <div id="overlay"><h1 id="ovtitle"></h1><div>Click to play again</div></div>
 
 <script>
@@ -302,8 +306,9 @@ function monsterAt(px, py) {
   const wx = (px + camera.x) / TILE - 0.5, wy = (py + camera.y) / TILE - 0.5;
   return monsters.find(m => m.hp > 0 && visible(m.x, m.y) && Math.hypot(m.x - wx, m.y - wy) < 0.6);
 }
-canvas.addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
-canvas.addEventListener('mousedown', e => {
+canvas.addEventListener('pointermove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
+canvas.addEventListener('pointerdown', e => {
+  mouse.x = e.clientX; mouse.y = e.clientY;
   if (gameOver) return;
   const m = monsterAt(e.clientX, e.clientY);
   if (m) { hero.target = m; hero.repath = 0; return; }
@@ -312,14 +317,16 @@ canvas.addEventListener('mousedown', e => {
   const ht = tileOf(hero);
   if (explored[ty]?.[tx]) hero.path = findPath(ht.x, ht.y, tx, ty);
 });
-addEventListener('keydown', e => {
-  if (e.key.toLowerCase() === 'q' && !gameOver && hero.potions > 0 && hero.hp < hero.maxHp) {
+function drinkPotion() {
+  if (!gameOver && hero.potions > 0 && hero.hp < hero.maxHp) {
     hero.potions--;
     const heal = Math.round(hero.maxHp * 0.4);
     hero.hp = Math.min(hero.maxHp, hero.hp + heal);
     floatText(hero.x, hero.y, '+' + heal, '#5f5');
   }
-});
+}
+addEventListener('keydown', e => { if (e.key.toLowerCase() === 'q') drinkPotion(); });
+$('potbtn').addEventListener('click', drinkPotion);
 $('overlay').addEventListener('click', newGame);
 
 // ---------- Main loop ----------
