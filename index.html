@@ -21,24 +21,61 @@
     font: 13px/1.5 system-ui, sans-serif; pointer-events: none;
     background: rgba(0,0,0,.55); padding: 8px 12px; border-radius: 8px;
   }
+  #xpbar { width: 200px; height: 6px; background: #2a2414; border-radius: 3px; overflow: hidden; margin: 2px 0 4px; }
+  #xpfill { height: 100%; background: linear-gradient(#ffd23f, #c9971a); width: 0; }
+  .hudbtn { pointer-events: auto; cursor: pointer; background: #2a2018; color: var(--fg); border: 1px solid #6b5f53; border-radius: 6px; padding: 2px 8px; font: inherit; }
+  .hudbtn:focus-visible { outline: 2px solid #ffd23f; }
+  #statsbtn.has-points { border-color: #ffd23f; color: #ffd23f; animation: glow 1s ease-in-out infinite alternate; }
+  @keyframes glow { to { box-shadow: 0 0 10px #ffd23f88; } }
+  @media (prefers-reduced-motion: reduce) { #statsbtn.has-points { animation: none; } }
+  #stats {
+    position: fixed; left: 16px; bottom: calc(150px + env(safe-area-inset-bottom, 0px)); width: 240px;
+    max-width: calc(100% - 32px); box-sizing: border-box; color: var(--fg);
+    font: 14px/1.4 system-ui, sans-serif; background: rgba(12,10,8,.92);
+    border: 1px solid #6b5f53; border-radius: 8px; padding: 12px 14px;
+  }
+  #stats h2 { margin: 0 0 8px; font-size: 16px; display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px 8px; }
+  #pointsleft { font-size: 13px; font-weight: 500; color: #ffd23f; }
+  #stats .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 3px 0; }
+  #stats .row small { color: var(--muted); display: block; font-size: 12px; }
+  #stats .val { font-variant-numeric: tabular-nums; min-width: 2ch; text-align: right; }
+  #stats .plus { width: 26px; padding: 0; }
+  #stats .plus:disabled { opacity: .3; cursor: default; }
+  #stats hr { border: 0; border-top: 1px solid #3b3530; margin: 8px 0; }
+  #stats .derived { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  #stats .derived b { color: var(--fg); font-weight: 600; text-align: right; }
   #overlay {
     position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
     flex-direction: column; background: rgba(0,0,0,.7); color: #f0e6d0;
     font: 20px system-ui, sans-serif; cursor: pointer; text-align: center;
   }
-  #potbtn { pointer-events: auto; cursor: pointer; background: #2a2018; color: var(--fg); border: 1px solid #6b5f53; border-radius: 6px; padding: 2px 8px; font: inherit; }
-  #potbtn:focus-visible { outline: 2px solid #ffd23f; }
-  #overlay h1 { font-size: 48px; margin: 0 0 12px; }
+    #overlay h1 { font-size: 48px; margin: 0 0 12px; }
 </style>
 </head>
 <body>
 <canvas id="game"></canvas>
 <div id="hud">
-  <div>🧙 Hero &nbsp; Kills: <span id="kills">0</span> / <span id="total">0</span></div>
+  <div>🧙 Level <b id="level">1</b> &nbsp; Kills: <span id="kills">0</span> / <span id="total">0</span></div>
   <div id="hpbar"><div id="hpfill"></div></div>
-  <div><span id="hptext"></span> &nbsp; <button id="potbtn" type="button">🧪 × <span id="potions">3</span></button></div>
+  <div id="xpbar"><div id="xpfill"></div></div>
+  <div><span id="hptext"></span> &nbsp; <button id="potbtn" class="hudbtn" type="button">🧪 × <span id="potions">3</span></button>
+    <button id="statsbtn" class="hudbtn" type="button">Stats</button></div>
 </div>
-<div id="help">Click to move · Click a monster to attack · <b>Q</b> or 🧪 drink potion</div>
+<div id="stats" hidden>
+  <h2><span>Character</span><span id="pointsleft"></span></h2>
+  <div class="row"><div>💪 Strength<small>More damage</small></div><div><span class="val" id="s-str"></span> <button class="hudbtn plus" type="button" data-stat="str" aria-label="Add a point to Strength">+</button></div></div>
+  <div class="row"><div>🏹 Dexterity<small>Faster attacks, more crits</small></div><div><span class="val" id="s-dex"></span> <button class="hudbtn plus" type="button" data-stat="dex" aria-label="Add a point to Dexterity">+</button></div></div>
+  <div class="row"><div>❤️ Vitality<small>More life</small></div><div><span class="val" id="s-vit"></span> <button class="hudbtn plus" type="button" data-stat="vit" aria-label="Add a point to Vitality">+</button></div></div>
+  <hr>
+  <div class="derived">
+    <span>Damage</span><b id="d-dmg"></b>
+    <span>Attacks per second</span><b id="d-aps"></b>
+    <span>Critical chance</span><b id="d-crit"></b>
+    <span>Life</span><b id="d-life"></b>
+    <span>Experience</span><b id="d-xp"></b>
+  </div>
+</div>
+<div id="help">Click to move · Click a monster to attack · <b>Q</b> or 🧪 drink potion · <b>C</b> stats</div>
 <div id="overlay"><h1 id="ovtitle"></h1><div>Click to play again</div></div>
 
 <script>
@@ -48,10 +85,10 @@ const ctx = canvas.getContext('2d');
 const $ = id => document.getElementById(id);
 
 const MONSTER_TYPES = [
-  { emoji: '🐀', name: 'Rat',      hp: 12, dmg: [1, 3], speed: 3.2, cooldown: 0.8 },
-  { emoji: '🕷️', name: 'Spider',   hp: 18, dmg: [2, 4], speed: 3.6, cooldown: 0.9 },
-  { emoji: '💀', name: 'Skeleton', hp: 30, dmg: [3, 6], speed: 2.4, cooldown: 1.1 },
-  { emoji: '👹', name: 'Ogre',     hp: 55, dmg: [6, 10], speed: 2.0, cooldown: 1.5 },
+  { emoji: '🐀', name: 'Rat',      hp: 12, dmg: [1, 3], speed: 3.2, cooldown: 0.8, xp: 10 },
+  { emoji: '🕷️', name: 'Spider',   hp: 18, dmg: [2, 4], speed: 3.6, cooldown: 0.9, xp: 16 },
+  { emoji: '💀', name: 'Skeleton', hp: 30, dmg: [3, 6], speed: 2.4, cooldown: 1.1, xp: 30 },
+  { emoji: '👹', name: 'Ogre',     hp: 55, dmg: [6, 10], speed: 2.0, cooldown: 1.5, xp: 60 },
 ];
 
 let map, explored, rooms, hero, monsters, floaters, camera, mouse, gameOver;
@@ -116,11 +153,61 @@ function findPath(sx, sy, tx, ty) {
   return path.reverse();
 }
 
+// ---------- Character stats ----------
+const POINTS_PER_LEVEL = 5;
+const xpToNext = level => 40 * level * level + 10;          // 50, 170, 370, 650...
+const damageRange = h => [2 + Math.floor(h.str / 3), 5 + Math.floor(h.str / 2)];
+const attackDelay = h => Math.max(0.25, 0.7 - h.dex * 0.015); // seconds between swings
+const critChance = h => Math.min(0.5, 0.05 + h.dex * 0.01);
+const maxLife = h => 50 + h.vit * 5;
+
+function gainXp(amount) {
+  hero.xp += amount;
+  floatText(hero.x, hero.y - 0.4, `+${amount} XP`, '#ffd23f');
+  while (hero.xp >= xpToNext(hero.level)) {
+    hero.xp -= xpToNext(hero.level);
+    hero.level++;
+    hero.points += POINTS_PER_LEVEL;
+    hero.hp = hero.maxHp;
+    hero.levelFx = 1.2;
+    floatText(hero.x, hero.y - 0.8, 'LEVEL UP!', '#ffd23f');
+  }
+  updateStatsPanel();
+}
+
+function spendPoint(stat) {
+  if (hero.points <= 0) return;
+  hero.points--;
+  hero[stat]++;
+  const oldMax = hero.maxHp;
+  hero.maxHp = maxLife(hero);
+  hero.hp += hero.maxHp - oldMax;   // extra vitality fills the new life straight away
+  updateStatsPanel();
+}
+
+function updateStatsPanel() {
+  const [lo, hi] = damageRange(hero);
+  $('s-str').textContent = hero.str;
+  $('s-dex').textContent = hero.dex;
+  $('s-vit').textContent = hero.vit;
+  $('d-dmg').textContent = `${lo}–${hi}`;
+  $('d-aps').textContent = (1 / attackDelay(hero)).toFixed(2);
+  $('d-crit').textContent = Math.round(critChance(hero) * 100) + '%';
+  $('d-life').textContent = hero.maxHp;
+  $('d-xp').textContent = `${hero.xp} / ${xpToNext(hero.level)}`;
+  $('pointsleft').textContent = hero.points ? `${hero.points} point${hero.points > 1 ? 's' : ''} to spend` : '';
+  for (const b of document.querySelectorAll('#stats .plus')) b.disabled = hero.points <= 0;
+  $('statsbtn').classList.toggle('has-points', hero.points > 0);
+  $('statsbtn').textContent = hero.points ? `Stats +${hero.points}` : 'Stats';
+}
+
 // ---------- Setup ----------
 function newGame() {
   const start = generate();
-  hero = { x: start.x, y: start.y, hp: 100, maxHp: 100, speed: 4.5, path: [],
-           target: null, cooldown: 0, repath: 0, potions: 3, kills: 0 };
+  hero = { x: start.x, y: start.y, speed: 4.5, path: [],
+           target: null, cooldown: 0, repath: 0, potions: 3, kills: 0,
+           level: 1, xp: 0, points: 0, str: 10, dex: 10, vit: 10, levelFx: 0 };
+  hero.maxHp = hero.hp = maxLife(hero);
   monsters = [];
   for (let i = 1; i < rooms.length; i++) {
     const r = rooms[i], count = rand(1, 3);
@@ -137,6 +224,7 @@ function newGame() {
   camera = { x: 0, y: 0 };
   gameOver = false;
   $('overlay').style.display = 'none';
+  updateStatsPanel();
 }
 
 // ---------- Movement along a path ----------
@@ -167,12 +255,13 @@ function update(dt) {
     if (dist(hero, m) <= 1.5) {
       hero.path = [];
       if (hero.cooldown <= 0) {
-        const dmg = rand(5, 10), crit = Math.random() < 0.15;
+        const [lo, hi] = damageRange(hero);
+        const dmg = rand(lo, hi), crit = Math.random() < critChance(hero);
         const total = crit ? dmg * 2 : dmg;
         m.hp -= total; m.aggro = true;
         floatText(m.x, m.y, crit ? total + '!' : total, crit ? '#ffd23f' : '#fff');
-        hero.cooldown = 0.55;
-        if (m.hp <= 0) { hero.kills++; hero.target = null; }
+        hero.cooldown = attackDelay(hero);
+        if (m.hp <= 0) { hero.kills++; hero.target = null; gainXp(m.xp); }
       }
     } else if ((hero.repath -= dt) <= 0) {
       const mt = tileOf(m);
@@ -214,6 +303,7 @@ function update(dt) {
     for (let x = Math.max(0, ht.x - VIEW_RADIUS); x <= Math.min(W - 1, ht.x + VIEW_RADIUS); x++)
       if (Math.hypot(x - ht.x, y - ht.y) <= VIEW_RADIUS) explored[y][x] = true;
 
+  hero.levelFx = Math.max(0, hero.levelFx - dt);
   for (const f of floaters) { f.life -= dt; f.y -= dt * 0.8; }
   floaters = floaters.filter(f => f.life > 0);
 
@@ -286,6 +376,13 @@ function draw() {
     ctx.fillText(hovered.name, hovered.x * TILE - camera.x + TILE / 2, hovered.y * TILE - camera.y - 4);
   }
 
+  if (hero.levelFx > 0) {
+    const t = 1 - hero.levelFx / 1.2;
+    ctx.strokeStyle = `rgba(255,210,63,${1 - t})`; ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.arc(hero.x * TILE - camera.x + TILE / 2, hero.y * TILE - camera.y + TILE / 2, 16 + t * 40, 0, Math.PI * 2);
+    ctx.stroke();
+  }
   drawEmoji('🧙', hero.x * TILE - camera.x + TILE / 2, hero.y * TILE - camera.y + TILE / 2, 30);
 
   for (const f of floaters) {
@@ -298,6 +395,8 @@ function draw() {
   $('hpfill').style.width = (hero.hp / hero.maxHp * 100) + '%';
   $('hptext').textContent = `HP ${Math.ceil(hero.hp)} / ${hero.maxHp}`;
   $('kills').textContent = hero.kills;
+  $('level').textContent = hero.level;
+  $('xpfill').style.width = (hero.xp / xpToNext(hero.level) * 100) + '%';
   $('potions').textContent = hero.potions;
 }
 
@@ -325,7 +424,14 @@ function drinkPotion() {
     floatText(hero.x, hero.y, '+' + heal, '#5f5');
   }
 }
-addEventListener('keydown', e => { if (e.key.toLowerCase() === 'q') drinkPotion(); });
+const toggleStats = () => { $('stats').hidden = !$('stats').hidden; };
+addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  if (k === 'q') drinkPotion();
+  if (k === 'c') toggleStats();
+});
+$('statsbtn').addEventListener('click', toggleStats);
+for (const b of document.querySelectorAll('#stats .plus')) b.addEventListener('click', () => spendPoint(b.dataset.stat));
 $('potbtn').addEventListener('click', drinkPotion);
 $('overlay').addEventListener('click', newGame);
 
